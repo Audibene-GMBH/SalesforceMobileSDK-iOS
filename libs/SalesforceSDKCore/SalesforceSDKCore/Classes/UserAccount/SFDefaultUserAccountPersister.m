@@ -52,9 +52,6 @@ static const NSUInteger SFUserAccountManagerCannotWriteUserData = 10004;
 
 @implementation SFDefaultUserAccountPersister
 
-// TODO: Remove in Mobile SDK 9.0
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (BOOL)saveAccountForUser:(SFUserAccount *)userAccount error:(NSError **)error {
     BOOL success = NO;
     NSString *userAccountPlist = [SFDefaultUserAccountPersister userAccountPlistFileForUser:userAccount];
@@ -67,7 +64,7 @@ static const NSUInteger SFUserAccountManagerCannotWriteUserData = 10004;
     NSMutableDictionary<SFUserAccountIdentity *,SFUserAccount *> *userAccountMap = [NSMutableDictionary new];
     
     // Get the root directory, usually ~/Library/<appBundleId>/
-    NSString *rootDirectory = [[SFDirectoryManager sharedManager] directoryForUser:nil type:NSLibraryDirectory components:nil];
+    NSString *rootDirectory = [[SFDirectoryManager sharedManager] directoryForOrg:nil user:nil community:nil type:NSLibraryDirectory components:nil];
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:rootDirectory]) {
         // Now iterate over the org and then user directories to load
@@ -159,7 +156,6 @@ static const NSUInteger SFUserAccountManagerCannotWriteUserData = 10004;
     }
     return success;
 }
-#pragma clang diagnostic pop
 
 - (BOOL)saveUserAccount:(SFUserAccount *)userAccount toFile:(NSString *)filePath error:(NSError**)error {
 
@@ -182,22 +178,7 @@ static const NSUInteger SFUserAccountManagerCannotWriteUserData = 10004;
                                      userInfo:@{ NSLocalizedDescriptionKey : reason } ];
         return NO;
     }
-
-    // Remove any existing file.
-    NSFileManager *manager = [NSFileManager defaultManager];
-    if ([manager fileExistsAtPath:filePath]) {
-        NSError *removeAccountFileError = nil;
-        if (![manager removeItemAtPath:filePath error:&removeAccountFileError]) {
-            NSString *reason = [NSString stringWithFormat:@"Failed to remove old user account data at path '%@': %@",filePath,[removeAccountFileError localizedDescription]];
-            [SFSDKCoreLogger w:[self class] format:reason];
-            if (error)
-                *error = [NSError errorWithDomain:SFUserAccountManagerErrorDomain
-                                             code:SFUserAccountManagerCannotWriteUserData
-                                         userInfo:@{ NSLocalizedDescriptionKey : reason } ];
-            return NO;
-        }
-    }
-
+    
     // Serialize the user account data.
     NSData *archiveData = [NSKeyedArchiver archivedDataWithRootObject:userAccount requiringSecureCoding:NO error:nil];
     if (!archiveData) {
@@ -210,7 +191,7 @@ static const NSUInteger SFUserAccountManagerCannotWriteUserData = 10004;
         return NO;
     }
 
-    // Encrypt it.
+    // Encrypt the data.
     SFEncryptionKey *encKey = [[SFKeyStoreManager sharedInstance] retrieveKeyWithLabel:kUserAccountEncryptionKeyLabel autoCreate:YES];
     NSData *encryptedArchiveData = [encKey encryptData:archiveData];
     if (!encryptedArchiveData) {
@@ -222,8 +203,8 @@ static const NSUInteger SFUserAccountManagerCannotWriteUserData = 10004;
                                      userInfo:@{ NSLocalizedDescriptionKey : reason } ];
         return NO;
     }
-    // Save it.
-    BOOL saveFileSuccess = [manager createFileAtPath:filePath contents:encryptedArchiveData attributes:@{ NSFileProtectionKey : [SFFileProtectionHelper fileProtectionForPath:filePath] }];
+    // Save it atomically.
+    BOOL saveFileSuccess = [encryptedArchiveData writeToFile:filePath atomically:YES];
     if (!saveFileSuccess) {
         NSString *reason = [NSString stringWithFormat:@"Could not create user account data file at path.  %@",filePath];
         [SFSDKCoreLogger w:[self class] format:reason];
@@ -233,8 +214,10 @@ static const NSUInteger SFUserAccountManagerCannotWriteUserData = 10004;
                                      userInfo:@{ NSLocalizedDescriptionKey : reason } ];
         return NO;
     }
-
-    return YES;
+    //lets add the file protection now
+    NSString *fileProtections = [SFFileProtectionHelper fileProtectionForPath:filePath];
+    [[SFFileProtectionHelper sharedInstance] addProtection:fileProtections forPath:filePath];
+    return saveFileSuccess;
 }
 
 /** Loads a user account from a specified file
